@@ -1,8 +1,6 @@
 import Pyro5.server
 import Pyro5.api
-import os
-import sys
-import threading
+import os, sys, threading, time
 
 RELEASED = 0
 WANTED = 1
@@ -34,10 +32,37 @@ To exit the critical section
 
 
 def server(state):
+    daemon = Pyro5.server.Daemon()
+    uri = daemon.register("server")
+    print("uri=", uri)
+    daemon.requestLoop()
     
+def requisitar_recurso():
+    return
+
+def liberar_recurso():
+    return
+
+def listar_peers():
     return
 
 def client():
+    time.sleep(2)
+    print("Comandos disponíveis: 'requisitar', 'liberar', 'listar'")
+
+    while True:
+        comando = input(">>> ").strip().lower()
+        if comando == 'requisitar':
+            requisitar_recurso()
+        elif comando == 'liberar':
+            liberar_recurso()
+        elif comando == 'listar':
+            listar_peers()
+        elif comando == 'sair':
+            print(" Encerrando o cliente...")
+            os._exit(0)
+        else:
+            print("Comando inválido. Tente novamente.")
     return
 
 
