@@ -6,10 +6,6 @@ RELEASED = 0
 WANTED = 1
 HELD = 2
 
-class PyroService(object):
-
-    def random_func():
-        return
 
 """On initialization
     state := RELEASED;
@@ -30,12 +26,21 @@ To exit the critical section
     state := RELEASED;
     reply to any queued requests;"""
 
+"Código da thread do servidor"
 
-def server(state):
-    daemon = Pyro5.server.Daemon()
-    uri = daemon.register("server")
-    print("uri=", uri)
-    daemon.requestLoop()
+estado = RELEASED
+
+class ObjetoPyro():
+
+    def requisicao_recebida():
+
+
+    def method(self):
+        print("teste")
+        return
+
+
+"Código da thread do client"
     
 def requisitar_recurso():
     return
@@ -46,7 +51,7 @@ def liberar_recurso():
 def listar_peers():
     return
 
-def client():
+def cliente():
     time.sleep(2)
     print("Comandos disponíveis: 'requisitar', 'liberar', 'listar'")
 
@@ -68,12 +73,20 @@ def client():
 
 if __name__ ==  "__main__":
     try:
-        state = RELEASED
-        t_server = threading.Thread(target=server, args=(state,))
-        t_client = threading.Thread(target=client)
-        t_server.start()
+        print("digite o nome do peer:")
+        peer = input(">>> ").strip().lower()
+        daemon = Pyro5.server.Daemon()
+        ns = daemon.core.locate_ns()
+        uri = daemon.register(ObjetoPyro)
+        ns.register(peer, uri)
+        "daemon.requestLoop()"
+        
+        estado = RELEASED
+        t_pyro = threading.Thread(target=daemon.requestLoop(), daemon=True)
+        t_client = threading.Thread(target=cliente, daemon=True)
+        t_pyro.start()
         t_client.start()
-        t_server.join()
+        t_pyro.join()
         t_client.join()
     except KeyboardInterrupt:
         print("\nPrograma interrompido pelo usuário.")
