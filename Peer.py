@@ -33,7 +33,7 @@ estado = RELEASED
 class ObjetoPyro():
 
     def requisicao_recebida():
-
+        estado = WANTED
 
     def method(self):
         print("teste")
