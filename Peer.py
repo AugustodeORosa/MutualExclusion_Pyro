@@ -123,7 +123,8 @@ class Par:
             
             print(f"[{self.nome}] Estado alterado para DESEJADO. Timestamp: {self.timestamp_requisicao}.")
 
-            self.conectar_aos_pares()
+            # Antes de enviar, garante que a lista de pares está atualizada
+            self.verificar_pares_falhos()
 
             if not self.outros_pares:
                 print(f"[{self.nome}] Nenhum outro par ativo. Entrando na SC diretamente.")
@@ -183,6 +184,9 @@ class Par:
             print("="*40)
 
     def listar_pares(self):
+        # Antes de listar, força uma verificação para ter os dados mais recentes
+        self.verificar_pares_falhos()
+        
         with self.trava:
             print("\n--- Status dos Pares ---")
             print(f"Meu estado: {self.estado_para_str()}")
@@ -199,27 +203,48 @@ class Par:
     def estado_para_str(self):
         return {LIBERADO: "LIBERADO", DESEJADO: "DESEJADO", EM_USO: "EM USO"}.get(self.estado, "DESCONHECIDO")
 
-    def executar_envio_heartbeat(self):
+    # --- LÓGICA DE MANUTENÇÃO (HEARTBEAT) ---
+
+    def enviar_heartbeats(self):
+        """Envia um pulso de 'vida' para todos os outros pares."""
+        with self.trava:
+            pares_para_pingar = list(self.outros_pares.items())
+        
+        for nome_par, proxy in pares_para_pingar:
+            try:
+                proxy.receber_heartbeat(self.nome)
+            except Pyro5.errors.CommunicationError:
+                pass
+
+    def verificar_pares_falhos(self):
+        """Verifica se algum par não envia heartbeat há muito tempo."""
+        with self.trava:
+            self.conectar_aos_pares()
+            agora = time.time()
+            for nome_par, visto_por_ultimo in list(self.ultimo_heartbeat.items()):
+                if agora - visto_por_ultimo > TIMEOUT_HEARTBEAT:
+                    self.tratar_falha_par(nome_par)
+
+    def executar_tarefas_background(self):
+        """
+        Esta é a ÚNICA thread de manutenção. Ela envia heartbeats e
+        verifica por pares falhos em um loop contínuo.
+        """
+        proximo_envio_heartbeat = time.time()
+        proxima_verificacao_pares = time.time()
+
         while True:
-            time.sleep(INTERVALO_HEARTBEAT)
-            with self.trava:
-                pares_para_pingar = list(self.outros_pares.items())
+            agora = time.time()
             
-            for nome_par, proxy in pares_para_pingar:
-                try:
-                    proxy.receber_heartbeat(self.nome)
-                except Pyro5.errors.CommunicationError:
-                    pass
-    
-    def executar_verificador_heartbeat(self):
-        while True:
-            time.sleep(TIMEOUT_HEARTBEAT)
-            with self.trava:
-                self.conectar_aos_pares()
-                agora = time.time()
-                for nome_par, visto_por_ultimo in list(self.ultimo_heartbeat.items()):
-                    if agora - visto_por_ultimo > TIMEOUT_HEARTBEAT:
-                        self.tratar_falha_par(nome_par)
+            if agora >= proximo_envio_heartbeat:
+                self.enviar_heartbeats()
+                proximo_envio_heartbeat = agora + INTERVALO_HEARTBEAT
+            
+            if agora >= proxima_verificacao_pares:
+                self.verificar_pares_falhos()
+                proxima_verificacao_pares = agora + TIMEOUT_HEARTBEAT
+
+            time.sleep(0.5)
 
 def iniciar_servidor_nomes():
     try:
@@ -259,9 +284,11 @@ def principal():
     objeto_par.uri = uri
     objeto_par.servidor_nomes = servidor_nomes
 
+    # Inicia a thread do servidor Pyro (necessária para receber chamadas)
     threading.Thread(target=daemon.requestLoop, daemon=True).start()
-    threading.Thread(target=objeto_par.executar_envio_heartbeat, daemon=True).start()
-    threading.Thread(target=objeto_par.executar_verificador_heartbeat, daemon=True).start()
+    
+    # Inicia a ÚNICA thread de manutenção em background
+    threading.Thread(target=objeto_par.executar_tarefas_background, daemon=True).start()
 
     print(f"[{nome_par}] Servidor Pyro rodando em {uri}")
     print("\nComandos disponíveis: 'requisitar', 'liberar', 'listar', 'sair'")
