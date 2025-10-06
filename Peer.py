@@ -206,7 +206,6 @@ class Par:
     # --- LÓGICA DE MANUTENÇÃO (HEARTBEAT) ---
 
     def enviar_heartbeats(self):
-        """Envia um pulso de 'vida' para todos os outros pares."""
         with self.trava:
             pares_para_pingar = list(self.outros_pares.items())
         
@@ -217,7 +216,6 @@ class Par:
                 pass
 
     def verificar_pares_falhos(self):
-        """Verifica se algum par não envia heartbeat há muito tempo."""
         with self.trava:
             self.conectar_aos_pares()
             agora = time.time()
@@ -226,10 +224,7 @@ class Par:
                     self.tratar_falha_par(nome_par)
 
     def executar_tarefas_background(self):
-        """
-        Esta é a ÚNICA thread de manutenção. Ela envia heartbeats e
-        verifica por pares falhos em um loop contínuo.
-        """
+
         proximo_envio_heartbeat = time.time()
         proxima_verificacao_pares = time.time()
 
@@ -284,10 +279,8 @@ def principal():
     objeto_par.uri = uri
     objeto_par.servidor_nomes = servidor_nomes
 
-    # Inicia a thread do servidor Pyro (necessária para receber chamadas)
     threading.Thread(target=daemon.requestLoop, daemon=True).start()
     
-    # Inicia a ÚNICA thread de manutenção em background
     threading.Thread(target=objeto_par.executar_tarefas_background, daemon=True).start()
 
     print(f"[{nome_par}] Servidor Pyro rodando em {uri}")
