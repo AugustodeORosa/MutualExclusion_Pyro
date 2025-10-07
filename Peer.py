@@ -5,7 +5,6 @@ import threading
 import time
 import sys
 import os
-import random
 import subprocess
 
 TODOS_NOMES_DOS_PARES = ["ProcessoA", "ProcessoB", "ProcessoC", "ProcessoD"]
@@ -16,7 +15,7 @@ EM_USO = 2
 
 TEMPO_DE_ACESSO_RECURSO = 8
 INTERVALO_HEARTBEAT = 2
-TIMEOUT_HEARTBEAT = 5
+TIMEOUT_HEARTBEAT = 7
 TIMEOUT_REQUISICAO = 5
 
 Pyro5.config.COMMTIMEOUT = TIMEOUT_REQUISICAO
@@ -27,28 +26,25 @@ class Par:
     def __init__(self, nome):
         self.nome = nome
         self.uri = None
-        self.servidor_nomes = None
         self.estado = LIBERADO
         self.relogio_logico = 0
         self.timestamp_requisicao = -1
         self.respostas_pendentes = set()
         self.fila_requisicoes = []
-        self.outros_pares = {}
+        self.nomes_pares_ativos = set() # Armazena NOMES, não proxies
         self.ultimo_heartbeat = {}
-        self.trava = threading.Lock()
+        self.trava = threading.RLock() # RLock para segurança
         print(f"[{self.nome}] Par inicializado. Estado: LIBERADO.")
 
     def receber_requisicao(self, nome_requisitante, timestamp):
         with self.trava:
             self.relogio_logico = max(self.relogio_logico, timestamp) + 1
             self.atualizar_heartbeat(nome_requisitante)
-            
             print(f"[{self.nome}] Recebeu pedido de {nome_requisitante} com timestamp {timestamp}.")
 
-            tem_prioridade = (timestamp < self.timestamp_requisicao) or \
-                           (timestamp == self.timestamp_requisicao and nome_requisitante < self.nome)
+            tem_prioridade = (self.timestamp_requisicao, self.nome) < (timestamp, nome_requisitante)
 
-            if self.estado == EM_USO or (self.estado == DESEJADO and not tem_prioridade):
+            if self.estado == EM_USO or (self.estado == DESEJADO and tem_prioridade):
                 print(f"[{self.nome}] Pedido de {nome_requisitante} enfileirado.")
                 self.fila_requisicoes.append(nome_requisitante)
             else:
@@ -70,21 +66,27 @@ class Par:
         return True
     
     def _enviar_resposta_ok(self, nome_alvo):
-        if nome_alvo in self.outros_pares:
-            try:
-                self.outros_pares[nome_alvo].receber_resposta_ok(self.nome)
-            except Pyro5.errors.CommunicationError:
-                print(f"[{self.nome}] Falha ao enviar OK para {nome_alvo}. Marcando como falho.")
+        try:
+            # Cria proxy sob demanda
+            proxy_alvo = Pyro5.api.Proxy(f"PYRONAME:{nome_alvo}")
+            proxy_alvo.receber_resposta_ok(self.nome)
+        except (Pyro5.errors.CommunicationError, Pyro5.errors.NamingError):
+            print(f"[{self.nome}] Falha ao enviar OK para {nome_alvo}. Marcando como falho.")
+            with self.trava:
                 self.tratar_falha_par(nome_alvo)
 
     def atualizar_heartbeat(self, nome_par):
+        # Garante que o par está na lista de ativos ao receber contato
+        if nome_par not in self.nomes_pares_ativos:
+             self.nomes_pares_ativos.add(nome_par)
         self.ultimo_heartbeat[nome_par] = time.time()
 
     def tratar_falha_par(self, nome_par):
-        print(f"[{self.nome}] Par {nome_par} considerado FALHO. Removendo...")
+        # Este método deve ser chamado de dentro de uma trava
+        if nome_par in self.nomes_pares_ativos:
+            print(f"[{self.nome}] Par {nome_par} considerado FALHO. Removendo...")
+            self.nomes_pares_ativos.remove(nome_par)
         
-        if nome_par in self.outros_pares:
-            del self.outros_pares[nome_par]
         if nome_par in self.ultimo_heartbeat:
             del self.ultimo_heartbeat[nome_par]
             
@@ -95,50 +97,56 @@ class Par:
         self.fila_requisicoes = [p for p in self.fila_requisicoes if p != nome_par]
 
     def conectar_aos_pares(self):
-        print(f"[{self.nome}] Procurando outros pares...")
-        nomes_outros_pares = [p for p in TODOS_NOMES_DOS_PARES if p != self.nome]
-        
-        for nome_par in nomes_outros_pares:
-            if nome_par not in self.outros_pares:
-                try:
-                    uri_par = self.servidor_nomes.lookup(nome_par)
-                    self.outros_pares[nome_par] = Pyro5.api.Proxy(uri_par)
-                    self.outros_pares[nome_par]._pyroBind()
-                    self.atualizar_heartbeat(nome_par)
-                    print(f"[{self.nome}] Conectado com sucesso a {nome_par}.")
-                except Pyro5.errors.NamingError:
-                    pass
-                except Pyro5.errors.CommunicationError:
-                    print(f"[{self.nome}] Encontrou {nome_par}, mas não conseguiu se conectar.")
+        # Esta função agora apenas atualiza a lista de nomes de pares ativos
+        try:
+            servidor_nomes = Pyro5.api.locate_ns()
+            outros_nomes = [p for p in TODOS_NOMES_DOS_PARES if p != self.nome]
+            
+            for nome_par in outros_nomes:
+                if nome_par not in self.nomes_pares_ativos:
+                    try:
+                        uri_par = servidor_nomes.lookup(nome_par)
+                        # Apenas adiciona o nome, não guarda o proxy
+                        with self.trava:
+                            self.nomes_pares_ativos.add(nome_par)
+                            self.atualizar_heartbeat(nome_par)
+                        print(f"[{self.nome}] Par {nome_par} encontrado na rede.")
+                    except Pyro5.errors.NamingError:
+                        pass # O par ainda não está online, ignora por enquanto
+        except Pyro5.errors.NamingError:
+            print(f"[{self.nome}] Servidor de Nomes não encontrado.")
 
     def requisitar_recurso(self):
+        self.verificar_pares_falhos(conectar=True)
+        pares_para_requisitar = []
+        timestamp_da_requisicao = -1
+
         with self.trava:
             if self.estado != LIBERADO:
                 print(f"[{self.nome}] Ação inválida. Estado atual já é {self.estado_para_str()}.")
                 return
-
+            
             self.estado = DESEJADO
             self.relogio_logico += 1
             self.timestamp_requisicao = self.relogio_logico
+            timestamp_da_requisicao = self.timestamp_requisicao
             
-            print(f"[{self.nome}] Estado alterado para DESEJADO. Timestamp: {self.timestamp_requisicao}.")
+            print(f"[{self.nome}] Estado alterado para DESEJADO. Timestamp: {timestamp_da_requisicao}.")
+            
+            pares_para_requisitar = list(self.nomes_pares_ativos)
+            self.respostas_pendentes = set(pares_para_requisitar)
 
-            # Antes de enviar, garante que a lista de pares está atualizada
-            self.verificar_pares_falhos()
-
-            if not self.outros_pares:
-                print(f"[{self.nome}] Nenhum outro par ativo. Entrando na SC diretamente.")
-                self.respostas_pendentes = set()
-            else:
-                self.respostas_pendentes = set(self.outros_pares.keys())
-                
-                print(f"[{self.nome}] Enviando pedidos para: {list(self.respostas_pendentes)}")
-                
-                for nome_par, proxy in list(self.outros_pares.items()):
-                    try:
-                        proxy.receber_requisicao(self.nome, self.timestamp_requisicao)
-                    except Pyro5.errors.CommunicationError:
-                        print(f"[{self.nome}] Falha ao enviar pedido para {nome_par}.")
+        if not pares_para_requisitar:
+            print(f"[{self.nome}] Nenhum outro par ativo. Entrando na SC diretamente.")
+        else:
+            print(f"[{self.nome}] Enviando pedidos para: {pares_para_requisitar}")
+            for nome_par in pares_para_requisitar:
+                try:
+                    proxy = Pyro5.api.Proxy(f"PYRONAME:{nome_par}")
+                    proxy.receber_requisicao(self.nome, timestamp_da_requisicao)
+                except (Pyro5.errors.CommunicationError, Pyro5.errors.NamingError):
+                    print(f"[{self.nome}] Falha ao enviar pedido para {nome_par}.")
+                    with self.trava:
                         self.tratar_falha_par(nome_par)
         
         threading.Thread(target=self.aguardar_respostas).start()
@@ -153,49 +161,45 @@ class Par:
                     print(f"[{self.nome}] 👑 PERMISSÃO CONCEDIDA! Entrando na Seção Crítica.")
                     print(f"[{self.nome}] O recurso será liberado em {TEMPO_DE_ACESSO_RECURSO} segundos.")
                     print("="*40)
-                    
                     threading.Timer(TEMPO_DE_ACESSO_RECURSO, self.liberar_recurso).start()
                     return
             
-            if time.time() - inicio_espera > TIMEOUT_REQUISICAO * 2:
+            if time.time() - inicio_espera > TIMEOUT_REQUISICAO * len(TODOS_NOMES_DOS_PARES):
                 print(f"[{self.nome}] Timeout geral aguardando respostas. Retornando para LIBERADO.")
                 with self.trava:
                     self.estado = LIBERADO
                     self.respostas_pendentes.clear()
                 return
-
-            time.sleep(0.1)
+            time.sleep(0.2)
 
     def liberar_recurso(self):
         with self.trava:
             if self.estado != EM_USO:
                 return
-            
             self.estado = LIBERADO
             self.timestamp_requisicao = -1
-            print("\n" + "="*40)
-            print(f"[{self.nome}] 🚪 SAINDO da Seção Crítica. Estado: LIBERADO.")
-            
-            if self.fila_requisicoes:
-                print(f"[{self.nome}] Processando fila de pedidos: {self.fila_requisicoes}")
-                for nome_requisitante in self.fila_requisicoes:
-                    self._enviar_resposta_ok(nome_requisitante)
-                self.fila_requisicoes.clear()
-            print("="*40)
+            fila = list(self.fila_requisicoes)
+            self.fila_requisicoes.clear()
+
+        print("\n" + "="*40)
+        print(f"[{self.nome}] 🚪 SAINDO da Seção Crítica. Estado: LIBERADO.")
+        if fila:
+            print(f"[{self.nome}] Processando fila de pedidos: {fila}")
+            for nome_requisitante in fila:
+                self._enviar_resposta_ok(nome_requisitante)
+        print("="*40)
 
     def listar_pares(self):
-        # Antes de listar, força uma verificação para ter os dados mais recentes
-        self.verificar_pares_falhos()
-        
+        self.verificar_pares_falhos(conectar=True)
         with self.trava:
             print("\n--- Status dos Pares ---")
             print(f"Meu estado: {self.estado_para_str()}")
             print(f"Relógio Lógico: {self.relogio_logico}")
-            if not self.outros_pares:
+            if not self.nomes_pares_ativos:
                 print("Nenhum outro par ativo conhecido.")
             else:
                 print("Pares ativos conhecidos:")
-                for nome in self.outros_pares.keys():
+                for nome in self.nomes_pares_ativos:
                     visto_por_ultimo = time.time() - self.ultimo_heartbeat.get(nome, 0)
                     print(f"  - {nome} (visto {visto_por_ultimo:.1f}s atrás)")
             print("------------------------\n")
@@ -203,43 +207,35 @@ class Par:
     def estado_para_str(self):
         return {LIBERADO: "LIBERADO", DESEJADO: "DESEJADO", EM_USO: "EM USO"}.get(self.estado, "DESCONHECIDO")
 
-    # --- LÓGICA DE MANUTENÇÃO (HEARTBEAT) ---
-
     def enviar_heartbeats(self):
         with self.trava:
-            pares_para_pingar = list(self.outros_pares.items())
+            nomes_para_pingar = list(self.nomes_pares_ativos)
         
-        for nome_par, proxy in pares_para_pingar:
+        for nome_par in nomes_para_pingar:
             try:
+                proxy = Pyro5.api.Proxy(f"PYRONAME:{nome_par}")
                 proxy.receber_heartbeat(self.nome)
-            except Pyro5.errors.CommunicationError:
-                pass
-
-    def verificar_pares_falhos(self):
-        with self.trava:
-            self.conectar_aos_pares()
-            agora = time.time()
-            for nome_par, visto_por_ultimo in list(self.ultimo_heartbeat.items()):
-                if agora - visto_por_ultimo > TIMEOUT_HEARTBEAT:
+            except (Pyro5.errors.CommunicationError, Pyro5.errors.NamingError):
+                with self.trava:
                     self.tratar_falha_par(nome_par)
 
-    def executar_tarefas_background(self):
-
-        proximo_envio_heartbeat = time.time()
-        proxima_verificacao_pares = time.time()
-
-        while True:
+    def verificar_pares_falhos(self, conectar=False):
+        with self.trava:
             agora = time.time()
-            
-            if agora >= proximo_envio_heartbeat:
-                self.enviar_heartbeats()
-                proximo_envio_heartbeat = agora + INTERVALO_HEARTBEAT
-            
-            if agora >= proxima_verificacao_pares:
-                self.verificar_pares_falhos()
-                proxima_verificacao_pares = agora + TIMEOUT_HEARTBEAT
+            # Itera sobre cópia para poder modificar o original
+            for nome_par in list(self.nomes_pares_ativos):
+                ultimo_contato = self.ultimo_heartbeat.get(nome_par, 0)
+                if agora - ultimo_contato > TIMEOUT_HEARTBEAT:
+                    self.tratar_falha_par(nome_par)
+        
+        if conectar:
+            self.conectar_aos_pares()
 
-            time.sleep(0.5)
+    def executar_tarefas_background(self):
+        while True:
+            self.enviar_heartbeats()
+            time.sleep(INTERVALO_HEARTBEAT)
+            self.verificar_pares_falhos(conectar=True)
 
 def iniciar_servidor_nomes():
     try:
@@ -256,7 +252,7 @@ def iniciar_servidor_nomes():
             print(f"Falha crítica ao iniciar o Servidor de Nomes: {e}")
             sys.exit(1)
 
-def principal():
+def main():
     if len(sys.argv) < 2 or sys.argv[1] not in TODOS_NOMES_DOS_PARES:
         print(f"Uso: python {sys.argv[0]} <NomeDoProcesso>")
         print(f"Nomes disponíveis: {', '.join(TODOS_NOMES_DOS_PARES)}")
@@ -277,10 +273,8 @@ def principal():
     servidor_nomes.register(nome_par, uri)
     
     objeto_par.uri = uri
-    objeto_par.servidor_nomes = servidor_nomes
 
     threading.Thread(target=daemon.requestLoop, daemon=True).start()
-    
     threading.Thread(target=objeto_par.executar_tarefas_background, daemon=True).start()
 
     print(f"[{nome_par}] Servidor Pyro rodando em {uri}")
@@ -292,11 +286,7 @@ def principal():
             if comando == 'requisitar':
                 objeto_par.requisitar_recurso()
             elif comando == 'liberar':
-                with objeto_par.trava:
-                    if objeto_par.estado == EM_USO:
-                        objeto_par.liberar_recurso()
-                    else:
-                        print(f"[{nome_par}] Não está na Seção Crítica para liberar.")
+                objeto_par.liberar_recurso()
             elif comando == 'listar':
                 objeto_par.listar_pares()
             elif comando == 'sair':
@@ -305,9 +295,12 @@ def principal():
                 print("Comando inválido.")
     finally:
         print(f"\n[{nome_par}] Desligando...")
-        servidor_nomes.remove(nome_par)
+        try:
+            servidor_nomes.remove(nome_par)
+        except Exception as e:
+            print(f"Não foi possível remover o registro do Servidor de Nomes: {e}")
         daemon.shutdown()
         os._exit(0)
 
 if __name__ == "__main__":
-    principal()
+    main()
