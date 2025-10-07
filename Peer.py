@@ -67,7 +67,6 @@ class Par:
     
     def _enviar_resposta_ok(self, nome_alvo):
         try:
-            # Cria proxy sob demanda
             proxy_alvo = Pyro5.api.Proxy(f"PYRONAME:{nome_alvo}")
             proxy_alvo.receber_resposta_ok(self.nome)
         except (Pyro5.errors.CommunicationError, Pyro5.errors.NamingError):
@@ -76,13 +75,11 @@ class Par:
                 self.tratar_falha_par(nome_alvo)
 
     def atualizar_heartbeat(self, nome_par):
-        # Garante que o par está na lista de ativos ao receber contato
         if nome_par not in self.nomes_pares_ativos:
              self.nomes_pares_ativos.add(nome_par)
         self.ultimo_heartbeat[nome_par] = time.time()
 
     def tratar_falha_par(self, nome_par):
-        # Este método deve ser chamado de dentro de uma trava
         if nome_par in self.nomes_pares_ativos:
             print(f"[{self.nome}] Par {nome_par} considerado FALHO. Removendo...")
             self.nomes_pares_ativos.remove(nome_par)
@@ -97,7 +94,6 @@ class Par:
         self.fila_requisicoes = [p for p in self.fila_requisicoes if p != nome_par]
 
     def conectar_aos_pares(self):
-        # Esta função agora apenas atualiza a lista de nomes de pares ativos
         try:
             servidor_nomes = Pyro5.api.locate_ns()
             outros_nomes = [p for p in TODOS_NOMES_DOS_PARES if p != self.nome]
@@ -106,13 +102,12 @@ class Par:
                 if nome_par not in self.nomes_pares_ativos:
                     try:
                         uri_par = servidor_nomes.lookup(nome_par)
-                        # Apenas adiciona o nome, não guarda o proxy
                         with self.trava:
                             self.nomes_pares_ativos.add(nome_par)
                             self.atualizar_heartbeat(nome_par)
                         print(f"[{self.nome}] Par {nome_par} encontrado na rede.")
                     except Pyro5.errors.NamingError:
-                        pass # O par ainda não está online, ignora por enquanto
+                        pass
         except Pyro5.errors.NamingError:
             print(f"[{self.nome}] Servidor de Nomes não encontrado.")
 
@@ -222,7 +217,6 @@ class Par:
     def verificar_pares_falhos(self, conectar=False):
         with self.trava:
             agora = time.time()
-            # Itera sobre cópia para poder modificar o original
             for nome_par in list(self.nomes_pares_ativos):
                 ultimo_contato = self.ultimo_heartbeat.get(nome_par, 0)
                 if agora - ultimo_contato > TIMEOUT_HEARTBEAT:
