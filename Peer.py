@@ -153,7 +153,7 @@ class Par:
                 if not self.respostas_pendentes:
                     self.estado = EM_USO
                     print("\n" + "="*40)
-                    print(f"[{self.nome}] 👑 PERMISSÃO CONCEDIDA! Entrando na Seção Crítica.")
+                    print(f"[{self.nome}]  PERMISSÃO CONCEDIDA! Entrando na Seção Crítica.")
                     print(f"[{self.nome}] O recurso será liberado em {TEMPO_DE_ACESSO_RECURSO} segundos.")
                     print("="*40)
                     threading.Timer(TEMPO_DE_ACESSO_RECURSO, self.liberar_recurso).start()
@@ -177,7 +177,7 @@ class Par:
             self.fila_requisicoes.clear()
 
         print("\n" + "="*40)
-        print(f"[{self.nome}] 🚪 SAINDO da Seção Crítica. Estado: LIBERADO.")
+        print(f"[{self.nome}]  SAINDO da Seção Crítica. Estado: LIBERADO.")
         if fila:
             print(f"[{self.nome}] Processando fila de pedidos: {fila}")
             for nome_requisitante in fila:
