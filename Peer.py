@@ -47,6 +47,7 @@ class Par:
             if self.estado == EM_USO or (self.estado == DESEJADO and tem_prioridade):
                 print(f"[{self.nome}] Pedido de {nome_requisitante} enfileirado.")
                 self.fila_requisicoes.append(nome_requisitante)
+                return False
             else:
                 print(f"[{self.nome}] Enviando OK imediato para {nome_requisitante}.")
                 self._enviar_resposta_ok(nome_requisitante)
@@ -81,7 +82,7 @@ class Par:
 
     def tratar_falha_par(self, nome_par):
         if nome_par in self.nomes_pares_ativos:
-            print(f"[{self.nome}] Par {nome_par} considerado FALHO. Removendo...")
+            """print(f"[{self.nome}] Par {nome_par} considerado FALHO. Removendo...")"""
             self.nomes_pares_ativos.remove(nome_par)
         
         if nome_par in self.ultimo_heartbeat:
@@ -101,7 +102,7 @@ class Par:
             for nome_par in outros_nomes:
                 if nome_par not in self.nomes_pares_ativos:
                     try:
-                        uri_par = servidor_nomes.lookup(nome_par)
+                        """uri_par = servidor_nomes.lookup(nome_par)"""
                         with self.trava:
                             self.nomes_pares_ativos.add(nome_par)
                             self.atualizar_heartbeat(nome_par)
